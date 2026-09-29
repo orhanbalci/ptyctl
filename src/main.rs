@@ -7,6 +7,7 @@ mod daemon;
 mod paths;
 mod payload;
 mod proto;
+mod sessions;
 
 use std::fs;
 use std::io::{self, Read, Write};
@@ -120,8 +121,35 @@ enum Cmd {
     Interrupt { name: String },
     /// Stop a session: kill its command and remove its socket (the log stays).
     Stop { name: String },
-    /// List sessions.
-    Ls,
+    /// List sessions with their state, uptime and time since last output.
+    Ls {
+        /// Print JSON instead of a table.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Watch a session's output live. Read-only: nothing you type is sent.
+    ///
+    /// Shows the last few KB, then follows new output until the session ends
+    /// or you press Ctrl-C. `run` plumbing is hidden and its markers are shown
+    /// as separators.
+    Attach {
+        name: String,
+        /// Replay everything still in the buffer instead of the last few KB.
+        #[arg(long)]
+        from_start: bool,
+        /// Show output exactly as received, ANSI codes and `run` plumbing included.
+        #[arg(long)]
+        raw: bool,
+    },
+    /// Remove stale sockets and old logs of sessions that are no longer running.
+    Clean {
+        /// Only remove logs last written longer ago than this (e.g. 30m, 2h, 7d; 0 = all).
+        #[arg(long, default_value = "7d")]
+        older_than: String,
+        /// Show what would be removed without removing it.
+        #[arg(long)]
+        dry_run: bool,
+    },
     /// Print a session's status as JSON.
     Status { name: String },
     #[command(name = "__daemon", hide = true)]
@@ -224,7 +252,16 @@ fn real_main() -> Result<ExitCode> {
             with_session(&name, |c| c.stop())?;
             Ok(ExitCode::SUCCESS)
         }
-        Cmd::Ls => ls(),
+        Cmd::Ls { json } => sessions::ls(json),
+        Cmd::Attach {
+            name,
+            from_start,
+            raw,
+        } => sessions::attach(&name, from_start, raw),
+        Cmd::Clean {
+            older_than,
+            dry_run,
+        } => sessions::clean_up(sessions::parse_age(&older_than)?, dry_run),
         Cmd::Status { name } => {
             let st = with_session(&name, |c| c.status())?;
             println!("{}", serde_json::to_string_pretty(&st)?);
@@ -471,39 +508,4 @@ fn raw_body(text: &str, code: &str, prompt: Option<&str>) -> String {
         body = &body[..line_start];
     }
     body.to_string()
-}
-
-fn ls() -> Result<ExitCode> {
-    let dir = state_dir()?;
-    let Ok(entries) = fs::read_dir(&dir) else {
-        return Ok(ExitCode::SUCCESS);
-    };
-    let mut names: Vec<String> = entries
-        .filter_map(|e| e.ok())
-        .filter_map(|e| {
-            e.file_name()
-                .to_str()
-                .and_then(|n| n.strip_suffix(".sock"))
-                .map(str::to_string)
-        })
-        .collect();
-    names.sort();
-    for name in names {
-        let paths = SessionPaths::new(&dir, &name);
-        match Client::new(&paths.socket, &name).status() {
-            Ok(st) => {
-                let state = match st.exit_code {
-                    Some(code) => format!("exited({code})"),
-                    None => "running".to_string(),
-                };
-                println!(
-                    "{name}\t{state}\tpid {}\t{}",
-                    st.child_pid.map_or("?".into(), |p| p.to_string()),
-                    st.command.join(" ")
-                );
-            }
-            Err(_) => println!("{name}\tstale"),
-        }
-    }
-    Ok(ExitCode::SUCCESS)
 }

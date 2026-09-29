@@ -1,6 +1,6 @@
 [package]
 name = "ptyctl"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
 rust-version = "1.88"
 description = "Keep interactive terminal sessions (REPLs, shells, kubectl exec -it) alive in the background and drive them from scripts or AI agents"
@@ -21,3 +21,6 @@ regex = "1.13.1"
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.151"
 strip-ansi-escapes = "0.2.1"
+
+[dev-dependencies]
+serde_json = "1.0.151"

@@ -43,6 +43,7 @@ struct Buffer {
     /// Where a `read` without `since` continues from.
     cursor: u64,
     last_output: Instant,
+    last_output_unix: Option<u64>,
     eof: bool,
     exit_code: Option<u32>,
 }
@@ -106,15 +107,13 @@ pub fn run(spec: Spec) -> Result<()> {
     let session = Arc::new(Session {
         child_pid: child.process_id(),
         killer: Mutex::new(child.clone_killer()),
-        started_unix: SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map(|d| d.as_secs())
-            .unwrap_or(0),
+        started_unix: unix_now(),
         buf: Mutex::new(Buffer {
             data: Vec::new(),
             start: 0,
             cursor: 0,
             last_output: Instant::now(),
+            last_output_unix: None,
             eof: false,
             exit_code: None,
         }),
@@ -142,6 +141,7 @@ pub fn run(spec: Spec) -> Result<()> {
                 b.start += drop_n as u64;
             }
             b.last_output = Instant::now();
+            b.last_output_unix = Some(unix_now());
             s.changed.notify_all();
         }
         s.buf.lock().unwrap().eof = true;
@@ -182,6 +182,13 @@ pub fn run(spec: Spec) -> Result<()> {
     Ok(())
 }
 
+fn unix_now() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
+}
+
 fn shutdown(s: &Session) -> ! {
     let _ = fs::remove_file(&s.paths.socket);
     std::process::exit(0);
@@ -209,7 +216,9 @@ fn handle(s: &Session, stream: UnixStream) -> Result<()> {
             pattern,
             idle_ms,
             timeout_ms,
-        } => match read(s, since, pattern, idle_ms, timeout_ms) {
+            until_output,
+            peek,
+        } => match read(s, since, pattern, idle_ms, timeout_ms, until_output, peek) {
             Ok(out) => Response::Output(out),
             Err(e) => Response::Error {
                 message: format!("{e:#}"),
@@ -241,6 +250,7 @@ fn status(s: &Session) -> Status {
         child_pid: s.child_pid,
         command: s.spec.command.clone(),
         started_unix: s.started_unix,
+        last_output_unix: b.last_output_unix,
         exit_code: b.exit_code,
         end: b.end(),
         log: s.paths.log.display().to_string(),
@@ -253,6 +263,8 @@ fn read(
     pattern: Option<String>,
     idle_ms: Option<u64>,
     timeout_ms: Option<u64>,
+    until_output: bool,
+    peek: bool,
 ) -> Result<Output> {
     let pattern = pattern
         .map(|p| Regex::new(&p))
@@ -261,7 +273,7 @@ fn read(
     let idle = idle_ms.map(Duration::from_millis);
     let began = Instant::now();
     let deadline = timeout_ms.map(|t| began + Duration::from_millis(t));
-    let waiting = pattern.is_some() || idle.is_some();
+    let waiting = pattern.is_some() || idle.is_some() || until_output;
 
     let mut b = s.buf.lock().unwrap();
     let since = since.unwrap_or(b.cursor);
@@ -270,9 +282,10 @@ fn read(
         let quiet_since = b.last_output.max(began);
         let outcome = if !waiting {
             Some(Outcome::Immediate)
-        } else if pattern
-            .as_ref()
-            .is_some_and(|re| re.is_match(&clean(b.since(since).0)))
+        } else if (until_output && b.end() > since)
+            || pattern
+                .as_ref()
+                .is_some_and(|re| re.is_match(&clean(b.since(since).0)))
         {
             Some(Outcome::Matched)
         } else if b.exit_code.is_some() {
@@ -294,7 +307,9 @@ fn read(
                 truncated,
                 outcome,
             };
-            b.cursor = out.end;
+            if !peek {
+                b.cursor = out.end;
+            }
             return Ok(out);
         }
 

@@ -31,7 +31,7 @@ impl Sessions {
 
 impl Drop for Sessions {
     fn drop(&mut self) {
-        for name in ["py", "sh"] {
+        for name in ["py", "sh", "watched", "live"] {
             let _ = self.ptyctl(&["stop", name]);
         }
         let _ = std::fs::remove_dir_all(&self.dir);
@@ -111,4 +111,76 @@ fn shell_session() {
         s.stdout(&["run", "sh", "--prompt", "\\$ $", "echo raw"]),
         ("raw\n".into(), 0)
     );
+}
+
+#[test]
+fn ls_attach_and_clean() {
+    let s = Sessions::new("mgmt");
+    let (_, code) = s.stdout(&[
+        "start",
+        "watched",
+        "--env",
+        "PS1=$ ",
+        "--wait-for",
+        "\\$ $",
+        "--",
+        "sh",
+    ]);
+    assert_eq!(code, 0);
+
+    // ls: a table with a header, and JSON with state and status fields.
+    let (table, _) = s.stdout(&["ls"]);
+    let mut lines = table.lines();
+    assert!(lines.next().unwrap().starts_with("NAME"), "{table}");
+    assert!(lines.next().unwrap().contains("running"), "{table}");
+    let (json, _) = s.stdout(&["ls", "--json"]);
+    let list: serde_json::Value = serde_json::from_str(&json).unwrap();
+    assert_eq!(list[0]["name"], "watched");
+    assert_eq!(list[0]["state"], "running");
+    assert!(list[0]["started_unix"].is_u64());
+
+    // attach: follows output live and never sends input.
+    let watcher = Command::new(env!("CARGO_BIN_EXE_ptyctl"))
+        .args(["attach", "watched"])
+        .env("PTYCTL_DIR", &s.dir)
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .unwrap();
+    std::thread::sleep(std::time::Duration::from_millis(300));
+    assert_eq!(
+        s.stdout(&["run", "watched", "--lang", "sh", "echo from-run"]),
+        ("from-run\n".into(), 0)
+    );
+    // `read` still sees output since the last run: attach did not move the cursor.
+    s.ptyctl(&["send", "watched", "echo after-attach"]);
+    std::thread::sleep(std::time::Duration::from_millis(300));
+    let (read, _) = s.stdout(&["read", "watched", "--wait-idle", "200"]);
+    assert!(read.contains("after-attach"), "{read}");
+    s.ptyctl(&["stop", "watched"]);
+    let watched = watcher.wait_with_output().unwrap();
+    let watched = String::from_utf8_lossy(&watched.stdout);
+    assert!(
+        watched.contains("── ptyctl run ──\nfrom-run\n── done (status 0) ──"),
+        "{watched}"
+    );
+    assert!(!watched.contains("_ptyctl_c"), "{watched}");
+
+    // clean: removes stale sockets and finished sessions' logs, keeps live ones.
+    std::fs::write(s.dir.join("ghost.sock"), "").unwrap();
+    s.stdout(&["start", "live", "--", "sh"]);
+    let (dry, _) = s.stdout(&["clean", "--older-than", "0", "--dry-run"]);
+    assert!(
+        dry.contains("ghost.sock") && dry.contains("watched.log"),
+        "{dry}"
+    );
+    assert!(s.dir.join("ghost.sock").exists());
+    s.stdout(&["clean", "--older-than", "0"]);
+    assert!(!s.dir.join("ghost.sock").exists());
+    assert!(!s.dir.join("watched.log").exists());
+    assert!(!s.dir.join("watched.daemon.log").exists());
+    assert!(s.dir.join("live.log").exists());
+    assert!(s.dir.join("live.daemon.log").exists());
+    assert!(s.dir.join("live.sock").exists());
 }

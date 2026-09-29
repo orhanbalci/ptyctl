@@ -12,7 +12,11 @@ use base64::engine::general_purpose::STANDARD;
 
 /// Base64 characters per line. Keeps every line well under the 1024-byte
 /// canonical-mode line limit of some terminals.
-const CHUNK: usize = 512;
+///
+/// Lines also have to fit the terminal width (250 columns by default):
+/// readline scrolls longer lines horizontally when echoing them, so the echo
+/// no longer contains the `_ptyctl_c` name that `attach` uses to hide them.
+const CHUNK: usize = 200;
 
 const PY_WRAPPER: &str = r#"def _ptyctl_run(src, tag):
     import ast, sys, traceback
@@ -151,7 +155,8 @@ mod tests {
         for lines in [python(code, "abc"), sh(code, "abc")] {
             for line in &lines {
                 assert!(!line.contains("__PTYCTL_"), "{line}");
-                assert!(line.len() < 1000);
+                // Fits the default 250 columns after a prompt like ">>> ".
+                assert!(line.len() < 240, "{} bytes: {line}", line.len());
             }
         }
     }

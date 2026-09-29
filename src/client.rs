@@ -65,8 +65,26 @@ impl<'a> Client<'a> {
             pattern,
             idle_ms: idle.map(|d| d.as_millis() as u64),
             timeout_ms: timeout.map(|d| d.as_millis() as u64),
+            until_output: false,
+            peek: false,
         };
         match self.call(&req, timeout)? {
+            Response::Output(o) => Ok(o),
+            other => bail!("unexpected response: {other:?}"),
+        }
+    }
+
+    /// Wait for any output after `since` without moving the read cursor.
+    pub fn watch(&self, since: u64, timeout: Duration) -> Result<Output> {
+        let req = Request::Read {
+            since: Some(since),
+            pattern: None,
+            idle_ms: None,
+            timeout_ms: Some(timeout.as_millis() as u64),
+            until_output: true,
+            peek: true,
+        };
+        match self.call(&req, Some(timeout))? {
             Response::Output(o) => Ok(o),
             other => bail!("unexpected response: {other:?}"),
         }

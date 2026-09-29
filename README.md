@@ -28,6 +28,12 @@ $ ptyctl stop shell
 cargo install ptyctl
 ```
 
+The latest version from GitHub, which may be ahead of crates.io:
+
+```console
+cargo install --git https://github.com/orhanbalci/ptyctl
+```
+
 Supports Linux and macOS.
 
 ## Commands
@@ -40,7 +46,33 @@ Supports Linux and macOS.
 | `ptyctl read <name> [--wait-for RE] [--wait-idle MS]` | Print output since the last `read`/`run`. |
 | `ptyctl interrupt <name>` | Send Ctrl-C. |
 | `ptyctl stop <name>` | Kill the command and remove the session. |
-| `ptyctl ls` / `ptyctl status <name>` | List sessions / show one as JSON. |
+| `ptyctl ls [--json]` | List sessions: state, pid, uptime, time since last output, command. |
+| `ptyctl status <name>` | Show one session as JSON. |
+| `ptyctl attach <name> [--from-start] [--raw]` | Watch a session live, read-only. |
+| `ptyctl clean [--older-than 7d] [--dry-run]` | Remove stale sockets and old logs of finished sessions. |
+
+```console
+$ ptyctl ls
+NAME       STATE      PID    UPTIME  IDLE  COMMAND
+django     running    43439  12m     8s    kubectl exec -it my-pod -- python manage.py shell
+scratch    exited(0)  43471  2h      2h    python3 -q
+```
+
+### Watching a session
+
+`ptyctl attach <name>` shows the last few KB of output and then follows new
+output live, so you can watch while a script or agent drives the session. It
+never sends input: keystrokes go nowhere, and Ctrl-C only stops watching. The
+session keeps running. The base64 lines that `run` types are hidden, and each
+run is framed as `── ptyctl run ──` … `── done (status N) ──`. Use `--raw` to
+see the stream exactly as received.
+
+### Cleaning up
+
+Logs are kept after a session stops. `ptyctl clean` removes sockets left behind
+by daemons that died, and the logs of sessions that are no longer running and
+were last written more than `--older-than` ago (default `7d`, `0` for all).
+Running sessions are never touched.
 
 ### `run` languages
 
@@ -78,6 +110,9 @@ The daemon speaks newline-delimited JSON on `~/.ptyctl/<name>.sock`, one
 request per connection: `{"op":"status"}`, `{"op":"write","data":"..."}`,
 `{"op":"read","since":0,"pattern":"...","idle_ms":500,"timeout_ms":30000}`,
 `{"op":"stop"}`. Output offsets are absolute byte offsets from session start.
+A `read` moves the session's read cursor unless it sets `"peek":true`, and
+`"until_output":true` returns as soon as any new output exists (this is how
+`attach` follows a session without disturbing `read`).
 
 ## License
 
