@@ -68,9 +68,9 @@ enum Cmd {
     },
     /// Run code in a session and print only its output.
     ///
-    /// With --lang python (default) or sh, the code is wrapped with unique
+    /// With --lang python (default), node or sh, the code is wrapped with unique
     /// markers so completion is detected reliably and the input echo is
-    /// removed. Multi-line code is fine. Exit status: python 0/1 (exception),
+    /// removed. Multi-line code is fine. Exit status: python/node 0/1 (exception),
     /// sh the command's status, 124 on timeout, 125 if the session exited.
     Run {
         name: String,
@@ -160,6 +160,8 @@ enum Cmd {
 enum Lang {
     /// Python REPL: python, `manage.py shell`, IPython.
     Python,
+    /// Node.js REPL: node.
+    Node,
     /// POSIX shell: sh, bash, zsh.
     Sh,
     /// Send the text as typed and wait for --prompt or for quiet.
@@ -423,6 +425,7 @@ fn run(
         let tag = unique_tag();
         let (lines, pattern, idle) = match lang {
             Lang::Python => (payload::python(code, &tag), done_pattern(&tag), None),
+            Lang::Node => (payload::node(code, &tag), done_pattern(&tag), None),
             Lang::Sh => (payload::sh(code, &tag), done_pattern(&tag), None),
             Lang::Raw => (
                 code.lines().map(str::to_string).collect(),

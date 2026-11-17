@@ -203,6 +203,9 @@ struct WatchFilter {
     pending: String,
     /// The last thing shown was a flushed partial line (no newline yet).
     mid_line: bool,
+    /// The previous line was plumbing or a DONE marker. The Node REPL echoes
+    /// `undefined` after each of those, which is hidden too.
+    after_plumbing: bool,
 }
 
 impl WatchFilter {
@@ -245,7 +248,13 @@ impl WatchFilter {
         let mut rest = text.as_str();
         while let Some(i) = rest.find('\n') {
             let (line, tail) = rest.split_at(i + 1);
-            if let Some(r) = Self::render(line) {
+            let echo = self.after_plumbing && line.trim() == "undefined";
+            self.after_plumbing = line.contains("_ptyctl_c")
+                || SCROLLED_ECHO.is_match(line)
+                || line.contains("__PTYCTL_DONE_");
+            if echo {
+                self.after_plumbing = false;
+            } else if let Some(r) = Self::render(line) {
                 // Start a separator on its own line, not after a shown prompt.
                 if self.mid_line && r.starts_with('─') {
                     out.push('\n');
@@ -393,6 +402,17 @@ mod tests {
             "── ptyctl run ──\nhello\n── done (status 0) ──\n"
         );
         assert_eq!(f.flush(), ">>> ");
+    }
+
+    #[test]
+    fn watch_filter_hides_node_echo() {
+        let mut f = WatchFilter::default();
+        let text = "> void(_ptyctl_c='abc')\nundefined\n> await eval(... _ptyctl_c ...)\n__PTYCTL_BEGIN_t__\nundefined\n__PTYCTL_DONE_t__ 0\nundefined\n> ";
+        assert_eq!(
+            f.feed(text),
+            "── ptyctl run ──\nundefined\n── done (status 0) ──\n"
+        );
+        assert_eq!(f.flush(), "> ");
     }
 
     #[test]
