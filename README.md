@@ -83,6 +83,11 @@ echo of the input and returns an exit status:
 - `--lang python` (default): plain `python`, `manage.py shell`, IPython.
   Multi-line code works as-is, variables persist, and a trailing expression
   prints its `repr` like in the REPL. Exit status 1 if an exception is raised.
+- `--lang node`: the `node` REPL. Variables, functions and `let`/`const`
+  persist, a non-`undefined` result is printed with `util.inspect`, and a
+  returned promise is awaited. Code containing top-level `await` runs inside
+  an async function: assign to `globalThis` to keep values and `return` one
+  to print it. Exit status 1 if an exception is thrown or a promise rejects.
 - `--lang sh`: bash, zsh, sh. The code is `eval`'d in the running shell, so
   `cd` and `export` persist. Exit status is the last command's status.
 - `--lang raw` / `--prompt RE`: type the text as-is and wait until the

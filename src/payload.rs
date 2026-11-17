@@ -46,6 +46,40 @@ _ptyctl_run(__import__('base64').b64decode('{SRC}').decode('utf-8'), '{TAG}')
 del _ptyctl_run
 "#;
 
+const JS_WRAPPER: &str = r#"(async (src, tag) => {
+  delete globalThis._ptyctl_c;
+  const vm = require('vm'), util = require('util');
+  let status = 0;
+  process.stdout.write('__PTYCTL_BEGIN_' + tag + '__\n');
+  try {
+    let script = null;
+    try {
+      script = new vm.Script(src, { filename: '<ptyctl>' });
+    } catch (e) {
+      if (!(e instanceof SyntaxError) || !/\bawait\b/.test(src)) throw e;
+    }
+    let value = script
+      ? script.runInThisContext()
+      : await vm.runInThisContext('(async () => {\n' + src + '\n})()', { filename: '<ptyctl>' });
+    if (value && typeof value.then === 'function') value = await value;
+    if (value !== undefined) console.log(util.inspect(value, { colors: false }));
+  } catch (e) {
+    status = 1;
+    let text = e instanceof Error && e.stack ? e.stack : 'Uncaught ' + util.inspect(e);
+    // Drop the vm/REPL frames below the user's code (all of them for a
+    // SyntaxError, which has no frames of its own).
+    const lines = text.split('\n');
+    const frame = (l) => /^\s+at /.test(l);
+    let last = -1;
+    lines.forEach((l, i) => { if (frame(l) && l.includes('<ptyctl>')) last = i; });
+    text = lines.filter((l, i) => i <= last || !frame(l)).join('\n');
+    console.error(text);
+  } finally {
+    process.stdout.write('__PTYCTL_DONE_' + tag + '__ ' + status + '\n');
+  }
+})(Buffer.from('{SRC}', 'base64').toString('utf8'), '{TAG}')
+"#;
+
 pub fn begin_marker(tag: &str) -> String {
     format!("__PTYCTL_BEGIN_{tag}__")
 }
@@ -82,6 +116,32 @@ pub fn python(code: &str, tag: &str) -> Vec<String> {
     lines.push(
         "exec(__import__('base64').b64decode(_ptyctl_c).decode('utf-8')); del _ptyctl_c".into(),
     );
+    lines
+}
+
+/// Lines to type into a Node.js REPL (`node`, or any REPL built on `repl`
+/// that exposes `require`). The code runs as a script in the REPL's global
+/// context, so `var`/`let`/`const`/function declarations persist. A
+/// non-undefined completion value is printed with `util.inspect`, and a
+/// returned promise is awaited. Code that uses top-level `await` runs inside
+/// an async function instead: its declarations stay local (use `globalThis`)
+/// and it shows a value only via `return`.
+/// DONE status: 0 on success, 1 if an exception was thrown or a promise rejected.
+pub fn node(code: &str, tag: &str) -> Vec<String> {
+    let script = JS_WRAPPER
+        .replace("{SRC}", &STANDARD.encode(code))
+        .replace("{TAG}", tag);
+    let mut lines: Vec<String> = chunks(&script)
+        .iter()
+        .enumerate()
+        .map(|(i, c)| {
+            let op = if i == 0 { "=" } else { "+=" };
+            // `void` keeps the REPL from echoing the growing string back.
+            format!("void(_ptyctl_c{op}'{c}')")
+        })
+        .collect();
+    // `await` makes the REPL hold its prompt until the code has finished.
+    lines.push("await eval(Buffer.from(_ptyctl_c, 'base64').toString('utf8'))".into());
     lines
 }
 
@@ -152,7 +212,7 @@ mod tests {
     #[test]
     fn echo_never_contains_markers() {
         let code = "print('x' * 5000)\nfor i in range(3):\n    print(i)";
-        for lines in [python(code, "abc"), sh(code, "abc")] {
+        for lines in [python(code, "abc"), node(code, "abc"), sh(code, "abc")] {
             for line in &lines {
                 assert!(!line.contains("__PTYCTL_"), "{line}");
                 // Fits the default 250 columns after a prompt like ">>> ".

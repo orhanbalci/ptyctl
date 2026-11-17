@@ -31,7 +31,7 @@ impl Sessions {
 
 impl Drop for Sessions {
     fn drop(&mut self) {
-        for name in ["py", "sh", "watched", "live"] {
+        for name in ["py", "node", "sh", "watched", "live"] {
             let _ = self.ptyctl(&["stop", name]);
         }
         let _ = std::fs::remove_dir_all(&self.dir);
@@ -81,6 +81,46 @@ fn python_session() {
 
     assert_eq!(s.ptyctl(&["stop", "py"]).status.code(), Some(0));
     assert_ne!(s.ptyctl(&["run", "py", "1"]).status.code(), Some(0));
+}
+
+#[test]
+fn node_session() {
+    if !have("node") {
+        eprintln!("skipping: node not found");
+        return;
+    }
+    let s = Sessions::new("node");
+    let (_, code) = s.stdout(&["start", "node", "--wait-for", "> $", "--", "node"]);
+    assert_eq!(code, 0);
+    let run = |code: &str| s.stdout(&["run", "node", "--lang", "node", code]);
+
+    assert_eq!(run("let x = 20"), (String::new(), 0));
+    assert_eq!(run("x + 1"), ("21\n".into(), 0));
+    assert_eq!(
+        run("for (let i = 0; i < 2; i++) console.log('i', i)\nx * 2"),
+        ("i 0\ni 1\n40\n".into(), 0)
+    );
+    assert_eq!(run("({ a: [1, 2] })"), ("{ a: [ 1, 2 ] }\n".into(), 0));
+    assert_eq!(run("Promise.resolve(42)"), ("42\n".into(), 0));
+    assert_eq!(
+        run(
+            "const v = await new Promise(r => setTimeout(() => r(7), 50));\nglobalThis.y = v;\nreturn v * 2"
+        ),
+        ("14\n".into(), 0)
+    );
+    assert_eq!(run("y + x"), ("27\n".into(), 0));
+
+    let (out, code) = run("throw new Error('boom')");
+    assert!(out.contains("Error: boom"), "{out}");
+    assert!(!out.contains("node:"), "internal frames: {out}");
+    assert_eq!(code, 1);
+    let (out, code) = run("Promise.reject(new TypeError('nope'))");
+    assert!(out.contains("TypeError: nope"), "{out}");
+    assert_eq!(code, 1);
+    let (out, code) = run("syntax error(");
+    assert!(out.contains("SyntaxError"), "{out}");
+    assert_eq!(code, 1);
+    assert_eq!(run("x"), ("20\n".into(), 0));
 }
 
 #[test]
